@@ -735,8 +735,9 @@ pub struct MidiInputs {
 }
 
 impl MidiInputs {
-    /// Opens the named ports (all ports when `names` is empty).
-    pub fn open(names: &[String], transport: Option<Arc<Mutex<SharedTransport>>>) -> MidiInputs {
+    /// Opens the named ports (all ports when `names` is empty). `wake` is called after every message (the
+    /// UI redraws then, so a key pressed on the controller lights up at once).
+    pub fn open(names: &[String], transport: Option<Arc<Mutex<SharedTransport>>>, wake: Option<Arc<dyn Fn() + Send + Sync>>) -> MidiInputs {
         let (tx, rx) = unbounded();
         let mut conns = Vec::new();
         let mut opened = Vec::new();
@@ -752,12 +753,16 @@ impl MidiInputs {
             let Some(port) = input.ports().into_iter().find(|p| input.port_name(p).ok().as_deref() == Some(name.as_str())) else { continue };
             let tx = tx.clone();
             let tr = transport.clone();
+            let wake = wake.clone();
             let conn = input.connect(
                 &port,
                 "dragon-daw",
                 move |_, bytes, _| {
                     let beat = tr.as_ref().and_then(|t| t.lock().ok().map(|s| s.beat_now())).unwrap_or(0.0);
                     let _ = tx.send(TimedMidi { message: crate::midi::parse(bytes), beat, seconds: start.elapsed().as_secs_f64(), port: idx });
+                    if let Some(w) = &wake {
+                        w();
+                    }
                 },
                 (),
             );

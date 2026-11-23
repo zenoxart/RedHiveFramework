@@ -207,6 +207,15 @@ pub fn show(ui: &mut Ui, st: &mut State) {
         }
     }
     let kh = st.ui.key_height;
+    // A key played live that is out of view: scroll so it's in the middle (not while dragging).
+    if let Some(n) = st.ui.follow_note.take() {
+        let row = (127 - n as i32) as f32 * kh;
+        let (top, h) = (st.ui.pr_y, grid.height());
+        if st.ui.pr_drag.is_none() && (row < top || row + kh > top + h) {
+            st.ui.pr_anim = None;
+            st.ui.pr_y = (row + kh / 2.0 - h / 2.0).clamp(0.0, max_y(kh));
+        }
+    }
     let zoom = st.ui.piano_zoom as f64;
     let (sx, sy) = (st.ui.pr_x, st.ui.pr_y);
     let x_of = |tick: f64| grid.left() + ((tick / PPQ as f64 - sx) * zoom) as f32;
@@ -244,6 +253,11 @@ pub fn show(ui: &mut Ui, st: &mut State) {
             }
         };
         gp.rect_filled(row, 0.0, col);
+        // A note being played live lights its whole row, so you see where it would land.
+        let l = key_light(st, pitch);
+        if l > 0.0 {
+            gp.rect_filled(row, 0.0, theme::ACCENT_2.gamma_multiply(0.16 * l));
+        }
         gp.line_segment([row.left_bottom(), row.right_bottom()], Stroke::new(0.5_f32, Color32::from_black_alpha(90)));
         if pitch % 12 == 0 {
             gp.line_segment([row.left_bottom(), row.right_bottom()], Stroke::new(1.0_f32, theme::GRID_BAR));
@@ -381,18 +395,19 @@ pub fn show(ui: &mut Ui, st: &mut State) {
         let y = y_of(pitch);
         let r = Rect::from_x_y_ranges(keys.x_range(), y..=y + kh);
         let black = is_black(pitch);
-        let held = st.ui.held_keys.iter().any(|(_, n)| *n == pitch);
-        kp.rect_filled(
-            r.shrink2(Vec2::new(0.0, 0.5)),
-            1.0,
-            if held {
-                theme::ACCENT_2
-            } else if black {
-                Color32::from_gray(20)
-            } else {
-                Color32::from_gray(225)
-            },
-        );
+        let light = key_light(st, pitch);
+        let base = if black { Color32::from_gray(20) } else { Color32::from_gray(225) };
+        kp.rect_filled(r.shrink2(Vec2::new(0.0, 0.5)), 1.0, base.lerp_to_gamma(theme::ACCENT_2, light));
+        if light > 0.0 {
+            // Pressed: a shadow at the key's root, an accent edge and the velocity as a bar at its tip.
+            kp.rect_filled(Rect::from_x_y_ranges(r.left()..=r.left() + 3.0, r.y_range()).shrink2(Vec2::new(0.0, 0.5)), 0.0, Color32::from_black_alpha((90.0 * light) as u8));
+            kp.rect_stroke(r.shrink(0.5), 1.0, Stroke::new(1.0_f32, theme::ACCENT.gamma_multiply(light)), egui::StrokeKind::Inside);
+            let v = st.ui.sounding.get(pitch as usize).copied().unwrap_or(0.0);
+            if v > 0.0 {
+                let w = (r.width() * 0.35 * v).max(2.0);
+                kp.rect_filled(Rect::from_x_y_ranges(r.right() - w..=r.right(), r.y_range()).shrink2(Vec2::new(0.0, 1.5)), 1.0, theme::ACCENT);
+            }
+        }
         if let Some(sc) = scale {
             if edit::in_scale(pitch, root, sc) {
                 let is_root = (pitch as i32 - root as i32).rem_euclid(12) == 0;
@@ -402,6 +417,10 @@ pub fn show(ui: &mut Ui, st: &mut State) {
         if pitch % 12 == 0 || kh >= 13.0 && !black || st.ui.pr_key_names && kh >= 8.0 {
             kp.text(r.right_center() - Vec2::new(3.0, 0.0), egui::Align2::RIGHT_CENTER, note_name(pitch), egui::FontId::proportional(9.0), if black { Color32::WHITE } else { Color32::BLACK });
         }
+    }
+    // Keep redrawing while a released key fades out.
+    if st.ui.released.iter().flatten().any(|t| t.elapsed().as_secs_f32() < 0.3) {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
     }
     // velocity lane
     p.rect_filled(vel, 0.0, theme::PANEL);
@@ -1006,4 +1025,13 @@ fn toolbar(ui: &mut Ui, st: &mut State, pat: Id, ch: Id) {
             }
         }
     });
+}
+
+/// How lit a key is (0 … 1): held keys by their velocity, released ones fading out over 0.3 s.
+fn key_light(st: &State, pitch: u8) -> f32 {
+    let v = st.ui.sounding.get(pitch as usize).copied().unwrap_or(0.0);
+    if v > 0.0 {
+        return 0.65 + 0.35 * v.min(1.0);
+    }
+    st.ui.released.get(pitch as usize).copied().flatten().map(|t| (1.0 - t.elapsed().as_secs_f32() / 0.3).max(0.0) * 0.6).unwrap_or(0.0)
 }

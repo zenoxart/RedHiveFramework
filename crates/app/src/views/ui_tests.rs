@@ -1914,3 +1914,39 @@ fn repair_area_zoom_and_pan() {
     let w = h.st.ui.repair.view.map(|v| v.1 - v.0).unwrap_or(4.0);
     assert!(w > (t1 - t0) * 1.5, "zoomed out: width {w:.2}");
 }
+
+/// Playing live lights the key on the piano-roll keyboard: a typing-keyboard key (Z = C in the current
+/// octave) and a MIDI note (both go through `live_note`). A note out of view scrolls the roll to it, and
+/// a released key fades out.
+#[test]
+fn live_notes_light_the_piano_roll_keys() {
+    fn view(ui: &mut egui::Ui, st: &mut State) {
+        super::keyboard::typing_keyboard(st, ui.ctx());
+        super::piano_roll::show(ui, st);
+    }
+    let mut h = Harness::new();
+    h.st.ui.typing_keyboard = true;
+    h.idle(view, 3);
+    let key = |k: egui::Key, pressed: bool| Event::Key { key: k, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE };
+    h.frame(view, vec![key(egui::Key::Z, true)], Modifiers::NONE);
+    let c = (h.st.ui.octave * 12) as usize;
+    assert!(h.st.ui.sounding[c] > 0.0, "Z lights C{}", h.st.ui.octave);
+    h.frame(view, vec![key(egui::Key::Z, false)], Modifiers::NONE);
+    assert_eq!(h.st.ui.sounding[c], 0.0);
+    assert!(h.st.ui.released[c].is_some(), "fading out");
+
+    // A MIDI note far above the view: the roll scrolls so it's in sight.
+    h.st.ui.pr_y = 128.0 * h.st.ui.key_height; // scrolled to the bottom
+    h.idle(view, 1);
+    let y0 = h.st.ui.pr_y;
+    h.st.live_note(true, 108, 1.0);
+    h.idle(view, 1);
+    let row = (127 - 108) as f32 * h.st.ui.key_height;
+    assert!(h.st.ui.pr_y < y0 && row >= h.st.ui.pr_y, "scrolled up to the note: {y0} -> {}", h.st.ui.pr_y);
+    assert!(h.st.ui.sounding[108] >= 1.0);
+    // A note already in view doesn't move it.
+    let y1 = h.st.ui.pr_y;
+    h.st.live_note(true, 107, 0.5);
+    h.idle(view, 1);
+    assert_eq!(h.st.ui.pr_y, y1);
+}

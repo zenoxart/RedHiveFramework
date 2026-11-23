@@ -169,6 +169,12 @@ pub struct UiState {
     pub typing_keyboard: bool,
     pub octave: i32,
     pub held_keys: Vec<(egui::Key, u8)>,
+    /// Notes sounding live (typing keyboard or MIDI controller): velocity per pitch, 0 = not held.
+    pub sounding: Vec<f32>,
+    /// When each pitch was let go (the key's light fades out).
+    pub released: Vec<Option<Instant>>,
+    /// The last note played live: the piano roll scrolls to it if it's out of view.
+    pub follow_note: Option<u8>,
     pub effect_windows: Vec<(Id, Id)>,
     pub instrument_windows: Vec<Id>,
     pub palette: Option<String>,
@@ -309,6 +315,9 @@ impl UiState {
             typing_keyboard: false,
             octave: 5,
             held_keys: Vec::new(),
+            sounding: vec![0.0; 128],
+            released: vec![None; 128],
+            follow_note: None,
             effect_windows: Vec::new(),
             instrument_windows: Vec::new(),
             palette: None,
@@ -904,6 +913,14 @@ impl State {
     }
 
     pub fn live_note(&mut self, on: bool, note: u8, velocity: f32) {
+        // Light the key on the piano-roll keyboard (whatever channel the note goes to).
+        if let Some(v) = self.ui.sounding.get_mut(note as usize) {
+            *v = if on { velocity.max(0.05) } else { 0.0 };
+            self.ui.released[note as usize] = if on { None } else { Some(Instant::now()) };
+            if on {
+                self.ui.follow_note = Some(note);
+            }
+        }
         // "wait for input": the first note played starts the armed recording.
         if on && self.ui.waiting_record {
             self.ui.waiting_record = false;
@@ -1146,7 +1163,7 @@ impl State {
             }
         }
         self.midi = None;
-        self.midi = Some(MidiInputs::open(&names, Some(self.audio.shared_transport())));
+        self.midi = Some(MidiInputs::open(&names, Some(self.audio.shared_transport()), Some(Arc::new(redhive_client_framework::runtime::request_repaint))));
         self.mcu.out = None;
         self.mcu.sent_faders = [-1.0; 9];
         self.mcu.sent_leds.clear();
